@@ -22,7 +22,7 @@ FUNCTION = hello
 all: checksum
 
 checksum: lib Checksum.java
-	javac -cp "$$HOME/.local/jolie/jolie-dist/jolie.jar" Checksum.java
+	javac -cp "$(JOLIE_HOME)/jolie.jar:$(JOLIE_HOME)/lib/libjolie.jar" Checksum.java
 	mkdir jfn
 	mv Checksum.class jfn
 	jar cvf checksum.jar jfn/Checksum.class

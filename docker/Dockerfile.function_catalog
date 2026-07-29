@@ -1,17 +1,17 @@
 FROM jolielang/jolie:edge-alpine
 
 WORKDIR /app
-RUN apk add --no-cache openjdk11
+RUN apk add --no-cache openjdk21-jdk
 
 COPY *.ol /app
 RUN mkdir jfn
 COPY Checksum.java /app/jfn
 
-RUN javac -cp /usr/lib/jolie/jolie.jar jfn/Checksum.java
+RUN javac -cp $JOLIE_HOME/jolie.jar:$JOLIE_HOME/lib/libjolie.jar jfn/Checksum.java
 RUN jar cvf checksum.jar jfn/Checksum.class
 RUN mkdir lib && mv checksum.jar lib/checksum.jar
 
-RUN apk del openjdk11
+RUN apk del openjdk21-jdk
 
 VOLUME /data
 EXPOSE 8002
