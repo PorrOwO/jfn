@@ -56,4 +56,4 @@ Ensure your `docker-compose.yaml` includes the `privileged` and `security_opt` f
       - jfn
 ```
 ## Adding your functions
-In the `functions/` folder there are already some example functions to be run, you can add any functions you write to that folder to have it available to the functio catalog.
+In the `functions/` folder there are already some example functions to be run, you can add any functions you write to that folder to have it available to the function catalog.
