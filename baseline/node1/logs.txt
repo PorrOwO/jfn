@@ -1,0 +1,8 @@
+gateway-1  | Loading the gateway with params: root
+gateway-1  | ├─── gatewayLocation:string = "socket://0.0.0.0:8000"
+gateway-1  | ├─── provisionerLocation:string = "socket://provisioner:8001"
+gateway-1  | ╰─── verbose:bool = false
+gateway-1  | 
+gateway-1  | 29/07/2026 10:32:11 Listening on socket://0.0.0.0:8000
+gateway-1  | Jul 29, 2026 10:32:30 AM gateway.ol
+gateway-1  | SEVERE: Unknown/Unsupported HTTP request type: (DIVIDE)

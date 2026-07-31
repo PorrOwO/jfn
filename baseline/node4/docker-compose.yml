@@ -1,0 +1,106 @@
+
+version: "3.9"
+networks:
+  jfn-4:
+    name: jfn-4
+
+services:
+  jocker:
+    image: jolielang/jocker
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    security_opt:
+      - label:disable
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    # disable in production to preserve the jocker logs
+    logging:
+      driver: none
+    networks:
+      - jfn-4
+
+  catalog:
+    image: jfn/function_catalog
+    build: # comment out this section in production
+      context: ..
+      dockerfile: docker/Dockerfile.function_catalog
+    environment:
+      FUNCTION_CATALOG_LOCATION: "socket://0.0.0.0:8002"
+      VERBOSE: true
+    volumes:
+      - ./functions:/app/functions:z
+    networks:
+      - jfn-4
+
+  provisioner:
+    image: jfn/provisioner
+    build: # comment out this section in production
+      context: ..
+      dockerfile: docker/Dockerfile.provisioner
+    environment:
+      ADVERTISE_LOCATION: "socket://provisioner:8001"
+      PROVISIONER_LOCATION: "socket://0.0.0.0:8001"
+      FUNCTION_CATALOG_LOCATION: "socket://catalog:8002"
+      DOCKER_NETWORK: "jfn-4"
+      MIN_RUNNERS: 1
+      CALLS_PER_RUNNER: 2
+      CALLS_FOR_PROMOTION: 3
+      CALLS_PER_SINGLETON: 12
+      VERBOSE: true
+      DEBUG: false
+    depends_on:
+      - jocker
+    networks:
+      - jfn-4
+
+  gateway:
+    image: jfn/gateway
+    build: # comment out this section in production
+      context: ..
+      dockerfile: docker/Dockerfile.gateway
+    ports:
+      - 8003:8000
+    environment:
+      GATEWAY_LOCATION: "socket://0.0.0.0:8000"
+      PROVISIONER_LOCATION: "socket://provisioner:8001"
+      VERBOSE: false
+    depends_on:
+      - provisioner
+    networks:
+      - jfn-4
+
+  # runner:
+  #   image: jfn/runner
+  #   build: # comment out this section in production
+  #     context: ..
+  #     dockerfile: docker/Dockerfile.runner
+  #   environment:
+  #     RUNNER_LOCATION: "socket://0.0.0.0:8010"
+  #     ADVERTISE_LOCATION: "socket://runner:8010"
+  #     FUNCTION_CATALOG_LOCATION: "socket://catalog:8002"
+  #     PROVISIONER_LOCATION: "socket://provisioner:8001"
+  #     VERBOSE: true
+  #     DEBUG: false
+  #   depends_on:
+  #     - provisioner
+  #     - catalog
+  #
+  # singleton:
+  #   image: jfn/singleton
+  #   build: # comment out this section in production
+  #     context: ..
+  #     dockerfile: docker/Dockerfile.singleton
+  #   environment:
+  #     SINGLETON_LOCATION: "socket://0.0.0.0:8011"
+  #     ADVERTISE_LOCATION: "socket://singleton:8011"
+  #     FUNCTION_CATALOG_LOCATION: "socket://catalog:8002"
+  #     PROVISIONER_LOCATION: "socket://provisioner:8001"
+  #     FUNCTION: "hello"
+  #     VERBOSE: true
+  #     DEBUG: false
+  #   depends_on:
+  #     - provisioner
+  #     - catalog
