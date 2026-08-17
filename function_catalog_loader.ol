@@ -4,11 +4,11 @@ from string_utils import StringUtils
 
 interface FunctionCatalogLoaderAPI {
   RequestResponse:
-    noop( void )( void ),
+    stop( void )( void ) 
 }
 
 service FunctionCatalogLoader {
-  execution: sequential
+  execution: concurrent
   embed Runtime as Runtime
   embed Console as Console
   embed StringUtils as StringUtils
@@ -20,22 +20,48 @@ service FunctionCatalogLoader {
 
   init {
     params = {}
+    
+    // Fetch and validate mandatory location variables (Fail-Fast)
     getenv@Runtime( "FUNCTION_CATALOG_LOCATION" )( params.functionCatalogLocation )
-    getenv@Runtime( "VERBOSE" )( params.verbose )
-    params.verbose = bool(params.verbose)
+    getenv@Runtime( "ETCD_LOCATION" )( params.etcdLocation )
+
+    if ( !is_defined( params.functionCatalogLocation ) || !is_defined( params.etcdLocation ) ) {
+      println@Console( "FATAL: Missing FUNCTION_CATALOG_LOCATION or ETCD_LOCATION environment variables!" )()
+      exit
+    }
+
+    // cast boolean parameters
+    getenv@Runtime( "VERBOSE" )( verbose_str )
+    if ( is_defined( verbose_str ) ) {
+      params.verbose = bool( verbose_str )
+    } else {
+      params.verbose = false
+    }
 
     valueToPrettyString@StringUtils( params )( t )
     println@Console( "Loading the function catalog with params: " + t )()
 
-    loadEmbeddedService@Runtime({
-      filepath = "function_catalog.ol"
-      type = "jolie"
-      params << params
-    })(_)
+    // fault handling
+    scope( embed_scope ) {
+      install( FileNotFoundException => 
+        println@Console( "FATAL: function_catalog.ol not found in the container image!" )();
+        exit
+      );
+      
+      loadEmbeddedService@Runtime({
+        filepath = "function_catalog.ol"
+        type = "jolie"
+        params << params
+      })(_)
+    }
+    
+    println@Console( "Function Catalog successfully embedded and running." )()
   }
+  
   main {
-    [noop(req)(res) {
-      req = res
+    [stop(req)(res) {
+      println@Console("Received stop signal. Shutting down Function Catalog Loader.")()
+      exit
     }]
   }
 }

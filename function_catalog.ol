@@ -1,11 +1,41 @@
 from console import Console
-from file import File
 from runtime import Runtime
 from .checksum import Checksum
 
 type FunctionCatalogParams {
   functionCatalogLocation: string
+  etcdLocation: string
   verbose: bool
+}
+
+// ETCD TYPES
+type EtcdPutRequest {
+  key:   string
+  value: string
+}
+
+type EtcdRangeRequest {
+  key: string
+  range_end?: string
+}
+
+type EtcdKv {
+  key: string
+  value: string
+  create_revision: long
+  mod_revision: long
+  version: long
+}
+
+type EtcdRangeResponse {
+  kvs*: EtcdKv
+  count: long
+}
+
+interface EtcdInterface {
+  RequestResponse:
+    put(EtcdPutRequest)(void),
+    range(EtcdRangeRequest)(EtcdRangeResponse)
 }
 
 type FunctionCatalogRequest { name: string }
@@ -20,25 +50,28 @@ type FunctionCatalogResult {
 
 interface FunctionCatalogAPI {
   RequestResponse:
-    hash( FunctionCatalogRequest )( string ),
-    get( FunctionCatalogRequest )( FunctionCatalogResult ),
+    checksum( FunctionCatalogRequest )( string ),
+    get( FunctionCatalogRequest )( string ),
     put( FunctionCatalogPutRequest )( FunctionCatalogResult )
-}
-
-constants {
-  FUNCTIONS_PATH = "functions"
-}
-
-define derive_filename {
-  filename = root + sep + FUNCTIONS_PATH + sep + request.name + ".ol"
 }
 
 service FunctionCatalog(p : FunctionCatalogParams) {
   execution: concurrent
   embed Console as Console
   embed Runtime as Runtime
-  embed File as File
   embed Checksum as Checksum
+
+  outputPort Etcd {
+    location: p.etcdLocation
+    protocol: http {
+      format = "json"
+      osc.put.alias = "v3/kv/put"
+      osc.put.method = "post"
+      osc.range.alias = "v3/kv/range"
+      osc.range.method = "post"
+    }
+    interfaces: EtcdInterface
+  }
 
   inputPort FunctionCatalogInput {
     location: p.functionCatalogLocation
@@ -48,65 +81,58 @@ service FunctionCatalog(p : FunctionCatalogParams) {
 
   init {
     enableTimestamp@Console(true)()
-    getFileSeparator@File()(sep)
-    getServiceDirectory@File()(root)
     println@Console("Listening on " + p.functionCatalogLocation)()
   }
 
   main {
-    [hash( request )( response ) {
-      derive_filename
-      exists@File(filename)(exists)
-      if(p.verbose) {
-        println@Console("Looking for \"" + request.name + "\" in " + filename)()
-      }
-      if(!exists) {
-        response = ""
-      } else {
-        readFile@File({
-          .filename = filename
-        })(code)
-        sha256@Checksum(code)(response)
-      }
-    }]
-    [get( request )( response ) {
-      derive_filename
-      exists@File(filename)(exists)
-      if(p.verbose) {
-        println@Console("Looking for \"" + request.name + "\" in " + filename)()
-      }
-      if(!exists) {
-        with(response) {
-          .error = true
-          .data = "Function does not exist"
-        }
-      } else {
-        readFile@File({
-          .filename = filename
-        })(code)
-        with(response) {
-          .error = false
-          .data = code
-        }
-      }
-    }]
+       [ put( request )() {
+         sha256@Checksum( request.code )( codeHash );
 
-    [put( request )( response ) {
-      derive_filename
-      exists@File(filename)(exists)
-      if(!exists) {
-        response = {
-          .error = true
-          .data = "Function already exists"
-        }
-      } else {
-        writeFile@File({
-          filename = filename
-          format = "text"
-          content = request.code
-        })()
-        response.error = false
-      }
-    }]
-  }
+         // base64 encoding for etcd requirements
+         base64Encode@Checksum( "/functions/" + request.name + "/code" )( keyCode );
+         base64Encode@Checksum( request.code )( valCode );
+
+         base64Encode@Checksum( "/functions/" + request.name + "/checksum" )( keyHash );
+         base64Encode@Checksum( codeHash )( valHash );
+
+         // Write code to etcd
+         put_code_req.key = keyCode;
+         put_code_req.value = valCode;
+         put@Etcd( put_code_req )();
+         // Write hash to etcd
+         put_hash_req.key = keyHash;
+         put_hash_req.value = valHash;
+         put@Etcd( put_hash_req )()
+
+         response.error = false
+         response.data = "Function " + request.name + " upload successful"
+      }]
+
+      [ get( request )( response ) {
+            base64Encode@Checksum( "/functions/" + request.name + "/code" )( encodedKey );
+            range_req.key = encodedKey;
+            
+            // Read from etcd
+            range@Etcd( range_req )( etcd_res );
+
+            if ( #etcd_res.kvs > 0 ) {
+                base64Decode@Checksum( etcd_res.kvs[0].value )( response.code )
+            } else {
+                throw( FunctionNotFound, "Function " + request.name + " not found" )
+            }
+      }]
+      [ checksum( request )( response ) {
+            base64Encode@Checksum( "/functions/" + request.name + "/checksum" )( encodedKey );
+            range_req.key = encodedKey;
+            
+            // Read from etcd
+            range@Etcd( range_req )( etcd_res );
+
+            if ( #etcd_res.kvs > 0 ) {
+                base64Decode@Checksum( etcd_res.kvs[0].value )( response.checksum )
+            } else {
+                throw( FunctionNotFound, "Function " + request.name + " not found" )
+            }
+      }]
+    }
 }
