@@ -1,42 +1,112 @@
-version: "3.9"
+networks:
+  jfn:
+    name: jfn
 
 services:
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.9
+    environment:
+      - ETCD_ADVERTISE_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+    networks:
+      - jfn
+
   jocker:
     image: jolielang/jocker
-    network_mode: host                     # Binds directly to the host network
-    privileged: true
+    privileged: true                       # Required for deep container orchestration
     volumes:
       - /var/run:/var/run
     security_opt:
-      - label:disable
+      - label:disable                      # Workaround to bypass SELinux socket blocking
     ulimits:
-      nofile: {soft: 65536, hard: 65536}
-    logging: {driver: none}
+      nofile:
+        soft: 65536
+        hard: 65536
+    networks:
+      - jfn
 
   catalog:
     image: jfn/function_catalog
-    network_mode: host                     # Binds directly to the host network
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.function_catalog
     environment:
       - FUNCTION_CATALOG_LOCATION=socket://0.0.0.0:8002
-      - ETCD_LOCATION=${ETCD_LOCATION}     # Injected by the Swarm bootstrapper
+      - ETCD_LOCATION=socket://etcd:2379
       - VERBOSE=true
-
+    depends_on:
+      - etcd
+    networks:
+      - jfn
+      
   provisioner:
     image: jfn/provisioner
-    network_mode: host                     # Binds directly to the host network
+    build: # comment out this section in production
+      context: ..
+      dockerfile: docker/Dockerfile.provisioner
     environment:
-      # Because Jocker spawns Executors with --network host, they share the host's 
-      # network namespace and can reach the Provisioner simply via localhost.
-      - ADVERTISE_LOCATION=socket://localhost:8001
-      - PROVISIONER_LOCATION=socket://0.0.0.0:8001
-      - FUNCTION_CATALOG_LOCATION=socket://localhost:8002
-      - DOCKER_NETWORK=host                # Tell Jocker to spawn Executors on the host network
-      - MIN_RUNNERS=1
-      - CALLS_PER_RUNNER=2
-      - CALLS_FOR_PROMOTION=3
-      - CALLS_PER_SINGLETON=12
-      - VERBOSE=true
-      - DEBUG=false
+      ADVERTISE_LOCATION: "socket://provisioner:8001"
+      PROVISIONER_LOCATION: "socket://0.0.0.0:8001"
+      FUNCTION_CATALOG_LOCATION: "socket://catalog:8002"
+      DOCKER_NETWORK: "jfn"
+      MIN_RUNNERS: 1
+      CALLS_PER_RUNNER: 2
+      CALLS_FOR_PROMOTION: 3
+      CALLS_PER_SINGLETON: 12
+      VERBOSE: true
+      DEBUG: false
     depends_on:
       - jocker
-      - catalog
+    networks:
+      - jfn
+
+  gateway:
+    image: jfn/gateway
+    build: # comment out this section in production
+      context: ..
+      dockerfile: docker/Dockerfile.gateway
+    ports:
+      - 8000:8000
+    environment:
+      GATEWAY_LOCATION: "socket://0.0.0.0:8000"
+      PROVISIONER_LOCATION: "socket://provisioner:8001"
+      FUNCTION_CATALOG_LOCATION: "socket://catalog:8002"
+      VERBOSE: false
+    depends_on:
+      - provisioner
+    networks:
+      - jfn
+
+  # runner:
+  #   image: jfn/runner
+  #   build: # comment out this section in production
+  #     context: ..
+  #     dockerfile: docker/Dockerfile.runner
+  #   environment:
+  #     RUNNER_LOCATION: "socket://0.0.0.0:8010"
+  #     ADVERTISE_LOCATION: "socket://runner:8010"
+  #     FUNCTION_CATALOG_LOCATION: "socket://catalog:8002"
+  #     PROVISIONER_LOCATION: "socket://provisioner:8001"
+  #     VERBOSE: true
+  #     DEBUG: false
+  #   depends_on:
+  #     - provisioner
+  #     - catalog
+  #
+  # singleton:
+  #   image: jfn/singleton
+  #   build: # comment out this section in production
+  #     context: ..
+  #     dockerfile: docker/Dockerfile.singleton
+  #   environment:
+  #     SINGLETON_LOCATION: "socket://0.0.0.0:8011"
+  #     ADVERTISE_LOCATION: "socket://singleton:8011"
+  #     FUNCTION_CATALOG_LOCATION: "socket://catalog:8002"
+  #     PROVISIONER_LOCATION: "socket://provisioner:8001"
+  #     FUNCTION: "hello"
+  #     VERBOSE: true
+  #     DEBUG: false
+  #   depends_on:
+  #     - provisioner
+  #     - catalog

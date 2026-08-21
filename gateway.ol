@@ -6,10 +6,12 @@ from reflection import Reflection
 from .runner import RunnerAPI
 from .function import FunctionAPI
 from .provisioner import ProvisionerAPI
+from .function_catalog import FunctionCatalogAPI
 
 type GatewayParams {
   gatewayLocation: string
   provisionerLocation: string
+  catalogLocation: string
   verbose: bool
 }
 
@@ -23,9 +25,21 @@ type GatewayResponse {
   data?: undefined
 }
 
+type FunctionCatalogPutRequest {
+  name: string
+  code: string 
+}
+
+type FunctionCatalogResult {
+  error: bool
+  data: string 
+}
+
 interface GatewayAPI {
   RequestResponse:
-    op( GatewayRequest )( GatewayResponse )
+    op( GatewayRequest )( GatewayResponse ),
+    put( FunctionCatalogPutRequest )( FunctionCatalogResult )
+
 }
 
 service Gateway(p : GatewayParams) {
@@ -40,6 +54,12 @@ service Gateway(p : GatewayParams) {
     location: p.gatewayLocation
     protocol: http { format = "json" }
     interfaces: GatewayAPI
+  }
+
+  outputPort Catalog {
+    location: p.catalogLocation
+    protocol: sodep
+    interfaces: FunctionCatalogAPI
   }
 
   outputPort Provisioner {
@@ -64,6 +84,25 @@ service Gateway(p : GatewayParams) {
   }
 
   main {
+    
+    [put( request )( response ) {
+      scope( put_scope ) {
+        install( IOException => {
+          response.error = true
+          response.data = "Failed to communicate with Catalog: " + put_scope.IOException
+        }, default => {
+          response.error = true
+          response.data = "Catalog error: " + put_scope.(put_scope.default)
+        })
+        
+        put@Catalog( request )( catalog_res )
+        
+        // If we reach here, it succeeded
+        response.error = false
+        response.data = "Function uploaded successfully"
+      }
+    }]
+
     [op( request )( response ) {
       scope(call_runner) {
         install(

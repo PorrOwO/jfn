@@ -22,6 +22,7 @@ service GatewayLoader {
     params = {}
     getenv@Runtime( "GATEWAY_LOCATION" )( params.gatewayLocation )
     getenv@Runtime( "PROVISIONER_LOCATION" )( params.provisionerLocation )
+    getenv@Runtime("FUNCTION_CATALOG_LOCATION")(params.catalogLocation)
     getenv@Runtime( "VERBOSE" )( params.verbose )
     params.verbose = bool(params.verbose)
 

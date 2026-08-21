@@ -164,10 +164,9 @@ service Runner( p : RunnerParams ) {
           )
           get@FunctionCatalog({
             name = request.name
-          })(response)
+          })(function_code)
         }
         if(!response.error) {
-          content << response.data
           undef(response.data)
           scope(write_function) {
             install(
@@ -183,7 +182,7 @@ service Runner( p : RunnerParams ) {
             writeFile@File({
               filename = filename
               format = "text"
-              content = content
+              content = function_code
             })()
             if(p.verbose) {
               println@Console("Wrote function to " + filename)()

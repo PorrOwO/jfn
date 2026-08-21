@@ -22,19 +22,20 @@ type EtcdRangeRequest {
 type EtcdKv {
   key: string
   value: string
-  create_revision: long
-  mod_revision: long
-  version: long
+  create_revision: string
+  mod_revision: string
+  version: string
 }
 
 type EtcdRangeResponse {
+  header?: undefined
   kvs*: EtcdKv
-  count: long
+  count: string
 }
 
 interface EtcdInterface {
   RequestResponse:
-    put(EtcdPutRequest)(void),
+    put(EtcdPutRequest)(undefined),
     range(EtcdRangeRequest)(EtcdRangeResponse)
 }
 
@@ -50,7 +51,7 @@ type FunctionCatalogResult {
 
 interface FunctionCatalogAPI {
   RequestResponse:
-    checksum( FunctionCatalogRequest )( string ),
+    hash( FunctionCatalogRequest )( string ),
     get( FunctionCatalogRequest )( string ),
     put( FunctionCatalogPutRequest )( FunctionCatalogResult )
 }
@@ -85,7 +86,7 @@ service FunctionCatalog(p : FunctionCatalogParams) {
   }
 
   main {
-       [ put( request )() {
+       [ put( request )( response ) {
          sha256@Checksum( request.code )( codeHash );
 
          // base64 encoding for etcd requirements
@@ -98,11 +99,11 @@ service FunctionCatalog(p : FunctionCatalogParams) {
          // Write code to etcd
          put_code_req.key = keyCode;
          put_code_req.value = valCode;
-         put@Etcd( put_code_req )();
+         put@Etcd( put_code_req )( etcd_res1 );
          // Write hash to etcd
          put_hash_req.key = keyHash;
          put_hash_req.value = valHash;
-         put@Etcd( put_hash_req )()
+         put@Etcd( put_hash_req )( etcd_res2 )
 
          response.error = false
          response.data = "Function " + request.name + " upload successful"
@@ -116,12 +117,12 @@ service FunctionCatalog(p : FunctionCatalogParams) {
             range@Etcd( range_req )( etcd_res );
 
             if ( #etcd_res.kvs > 0 ) {
-                base64Decode@Checksum( etcd_res.kvs[0].value )( response.code )
+                base64Decode@Checksum( etcd_res.kvs[0].value )( response )
             } else {
                 throw( FunctionNotFound, "Function " + request.name + " not found" )
             }
       }]
-      [ checksum( request )( response ) {
+      [ hash( request )( response ) {
             base64Encode@Checksum( "/functions/" + request.name + "/checksum" )( encodedKey );
             range_req.key = encodedKey;
             
@@ -129,7 +130,7 @@ service FunctionCatalog(p : FunctionCatalogParams) {
             range@Etcd( range_req )( etcd_res );
 
             if ( #etcd_res.kvs > 0 ) {
-                base64Decode@Checksum( etcd_res.kvs[0].value )( response.checksum )
+                base64Decode@Checksum( etcd_res.kvs[0].value )( response )
             } else {
                 throw( FunctionNotFound, "Function " + request.name + " not found" )
             }
