@@ -1,0 +1,63 @@
+networks:
+  jfn:
+    external: true
+
+services:
+  jocker:
+    image: jolielang/jocker
+    privileged: true
+    volumes:
+      - /var/run:/var/run
+    security_opt:
+      - label:disable
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    logging:
+      driver: none
+    networks:
+      - jfn
+
+  catalog:
+    image: jfn/function_catalog
+    environment:
+      FUNCTION_CATALOG_LOCATION: "socket://0.0.0.0:8002"
+      ETCD_LOCATION: "socket://MANAGER_IP:2379"
+      VERBOSE: "true"
+    ports:
+      - "8002:8002"
+    networks:
+      - jfn
+
+  provisioner:
+    image: jfn/provisioner
+    environment:
+      ADVERTISE_LOCATION: "socket://provisioner:8001"
+      PROVISIONER_LOCATION: "socket://0.0.0.0:8001"
+      FUNCTION_CATALOG_LOCATION: "socket://catalog:8002"
+      DOCKER_NETWORK: "jfn"
+      MIN_RUNNERS: "0"
+      CALLS_PER_RUNNER: "2"
+      CALLS_FOR_PROMOTION: "3"
+      CALLS_PER_SINGLETON: "12"
+      VERBOSE: "true"
+      DEBUG: "false"
+    depends_on:
+      - jocker
+    networks:
+      - jfn
+
+  gateway:
+    image: jfn/gateway
+    ports:
+      - "8000:8000"
+    environment:
+      GATEWAY_LOCATION: "socket://0.0.0.0:8000"
+      PROVISIONER_LOCATION: "socket://provisioner:8001"
+      FUNCTION_CATALOG_LOCATION: "socket://catalog:8002"
+      VERBOSE: "false"
+    depends_on:
+      - provisioner
+    networks:
+      - jfn
