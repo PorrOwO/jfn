@@ -2,7 +2,7 @@ networks:
   jfn_overlay:
     driver: overlay
     attachable: true
-    driver_otps:
+    driver_opts:
       com.docker.network.driver.mtu: 1250
 
 services:
@@ -25,13 +25,13 @@ services:
 
   node-bootstrapper:
     image: docker:25-cli
-    enviroment:
-      - MANAGER_IP=${MANAGER_IP}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - /home/porrowo/projects/jfn/docker/docker-compose.node.yml:/root/jfn/docker/docker-compose.node.yml
-      - /home/porrowo/projects/jfn:/root/jfn
+      - ${JFN_PATH}/docker/docker-compose.node.yml:/root/jfn/docker/docker-compose.node.yml
+      - ${JFN_PATH}:/root/jfn
     working_dir: /root/jfn/docker
+    environment:
+      - MANAGER_IP=${MANAGER_IP}
     command: >
       sh -c "docker network create jfn 2>/dev/null || true;
              docker compose -f docker-compose.node.yml down --remove-orphans 2>/dev/null;
@@ -53,7 +53,7 @@ services:
         protocol: tcp
         mode: host
     volumes:
-      - /home/porrowo/projects/jfn/docker/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${JFN_PATH}/docker/nginx.conf:/etc/nginx/nginx.conf:ro
     networks:
       - jfn_overlay
     deploy:
