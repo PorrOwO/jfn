@@ -4,41 +4,50 @@ from .checksum import Checksum
 
 type FunctionCatalogParams {
   functionCatalogLocation: string
-  etcdLocation: string
+  couchdbLocation: string
+  couchdbUser: string
+  couchdbPassword: string
   verbose: bool
 }
 
-// ETCD TYPES
-type EtcdPutRequest {
-  key:   string
-  value: string
+// --- COUCHDB TYPES ---
+type CouchDBError {
+  error[0,1]: string
+  reason[0,1]: string
 }
 
-type EtcdRangeRequest {
-  key: string
-  range_end?: string
+type GetDocRequest { 
+  name: string 
 }
 
-type EtcdKv {
-  key: string
-  value: string
-  create_revision: string
-  mod_revision: string
-  version: string
+type CouchDBGetResponse {
+  "_id": string
+  "_rev": string
+  code: string
+  checksum: string
 }
 
-type EtcdRangeResponse {
-  header?: undefined
-  kvs*: EtcdKv
-  count: string
+type CouchDBCreateResponse {
+  ok: bool
 }
 
-interface EtcdInterface {
+// All fields optional [0,1] so Jolie can parse BOTH success and error JSON from CouchDB without TypeMismatch
+type CouchDBPutResponse {
+  ok[0,1]: bool
+  id[0,1]: string
+  rev[0,1]: string
+  error[0,1]: string
+  reason[0,1]: string
+}
+
+interface CouchDBInterface {
   RequestResponse:
-    put(EtcdPutRequest)(undefined),
-    range(EtcdRangeRequest)(EtcdRangeResponse)
+    putDoc( undefined )( CouchDBPutResponse ) throws Conflict( CouchDBError ),
+    getDoc( GetDocRequest )( CouchDBGetResponse ) throws FunctionNotFound( CouchDBError ),
+    createDb( void )( CouchDBCreateResponse ) throws DbExists( CouchDBError )
 }
 
+// --- JFN CATALOG API ---
 type FunctionCatalogRequest { name: string }
 type FunctionCatalogPutRequest {
   name: string
@@ -51,8 +60,8 @@ type FunctionCatalogResult {
 
 interface FunctionCatalogAPI {
   RequestResponse:
-    hash( FunctionCatalogRequest )( string ),
-    get( FunctionCatalogRequest )( string ),
+    hash( FunctionCatalogRequest )( string ) throws FunctionNotFound( string ),
+    get( FunctionCatalogRequest )( string ) throws FunctionNotFound( string ),
     put( FunctionCatalogPutRequest )( FunctionCatalogResult )
 }
 
@@ -62,16 +71,28 @@ service FunctionCatalog(p : FunctionCatalogParams) {
   embed Runtime as Runtime
   embed Checksum as Checksum
 
-  outputPort Etcd {
-    location: p.etcdLocation
+  outputPort CouchDB {
+    location: p.couchdbLocation
     protocol: http {
       format = "json"
-      osc.put.alias = "v3/kv/put"
-      osc.put.method = "post"
-      osc.range.alias = "v3/kv/range"
-      osc.range.method = "post"
+
+      addHeader.header[0] << "Authorization" {
+        .value = "Basic YWRtaW46YWRtaW4="
+      }
+
+      osc.putDoc.template = "/jfn_functions/{name}"
+      osc.putDoc.method = "put"
+      osc.putDoc.statusCodes.Conflict = 409
+
+      osc.getDoc.template = "/jfn_functions/{name}"
+      osc.getDoc.method = "get"
+      osc.getDoc.statusCodes.FunctionNotFound = 404
+
+      osc.createDb.template = "/jfn_functions"
+      osc.createDb.method = "put"
+      osc.createDb.statusCodes.DbExists = 412
     }
-    interfaces: EtcdInterface
+    interfaces: CouchDBInterface
   }
 
   inputPort FunctionCatalogInput {
@@ -82,58 +103,115 @@ service FunctionCatalog(p : FunctionCatalogParams) {
 
   init {
     enableTimestamp@Console(true)()
+    
+    scope(create_db) {
+      install( DbExists => {
+        println@Console("CouchDB database 'jfn_functions' already exists.")()
+      }, default => {
+        println@Console("Created CouchDB database 'jfn_functions'.")()
+      })
+      createDb@CouchDB()( createRes )
+    }
+
     println@Console("Listening on " + p.functionCatalogLocation)()
   }
 
   main {
-       [ put( request )( response ) {
-         sha256@Checksum( request.code )( codeHash );
+    [ put( request )( response ) {
+      println@Console("=== 1. INCOMING REQUEST TO CATALOG ===")()
+      println@Console("DEBUG: request.name = " + request.name)()
+      // Note: #request.code returns 1 because it counts the vector elements (1 string), not string length.
+      // The actual code is printed below to verify it's correct.
+      println@Console("DEBUG: request.code = " + request.code)()
 
-         // base64 encoding for etcd requirements
-         base64Encode@Checksum( "/functions/" + request.name + "/code" )( keyCode );
-         base64Encode@Checksum( request.code )( valCode );
+      base64Encode@Checksum( request.code )( encodedCode );
+      sha256@Checksum( request.code )( codeHash );
 
-         base64Encode@Checksum( "/functions/" + request.name + "/checksum" )( keyHash );
-         base64Encode@Checksum( codeHash )( valHash );
+      undef(docRev)
+      scope(check_exists) {
+        install( FunctionNotFound => { 
+          println@Console("DEBUG: FunctionNotFound fault caught!")()
+        })
+        getDoc@CouchDB({ name = request.name })( existingDoc )
+        
+        println@Console("DEBUG: existingDoc: " + existingDoc)()
+        println@Console("DEBUG: After getDoc, is_defined(existingDoc) = " + is_defined(existingDoc))()
+        if ( is_defined( existingDoc ) ) {
+          docRev = existingDoc.("_rev")
+          println@Console("DEBUG: Assigned docRev = " + docRev)()
+        } else {
+          println@Console("DEBUG: existingDoc is NOT defined, docRev remains undefined")()
+        }
+      }
+      println@Console("DEBUG: After check_exists scope, is_defined(docRev) = " + is_defined(docRev))()
 
-         // Write code to etcd
-         put_code_req.key = keyCode;
-         put_code_req.value = valCode;
-         put@Etcd( put_code_req )( etcd_res1 );
-         // Write hash to etcd
-         put_hash_req.key = keyHash;
-         put_hash_req.value = valHash;
-         put@Etcd( put_hash_req )( etcd_res2 )
+      undef( putReq )
+      putReq.name = request.name
+      putReq.code = encodedCode
+      putReq.checksum = codeHash
+      
+      if ( is_defined( docRev ) ) {
+        putReq.("_rev") = docRev
+        println@Console("DEBUG: Assigned putReq._rev = " + putReq.("_rev"))()
+      } else {
+        println@Console("DEBUG: docRev is undefined, putReq._rev NOT assigned")()
+        undef( putReq.("_rev") ) // Explicitly ensure it's completely removed
+      }
 
-         response.error = false
-         response.data = "Function " + request.name + " upload successful"
-      }]
+      println@Console("=== 2. PAYLOAD TO COUCHDB ===")()
+      println@Console("DEBUG: putReq._rev is defined? " + is_defined(putReq.("_rev")))()
 
-      [ get( request )( response ) {
-            base64Encode@Checksum( "/functions/" + request.name + "/code" )( encodedKey );
-            range_req.key = encodedKey;
-            
-            // Read from etcd
-            range@Etcd( range_req )( etcd_res );
+      scope(write_doc) {
+        install( Conflict => {
+          println@Console("=== 3. CAUGHT CONFLICT ===")()
+          response.error = true
+          response.data = "Conflict writing to CouchDB."
+        }, default => {
+          println@Console("=== 3. CAUGHT WRITE ERROR ===")()
+          println@Console("ERROR MESSAGE: " + write_doc.(write_doc.default))()
+          response.error = true
+          response.data = "Failed to write to CouchDB: " + write_doc.(write_doc.default)
+        })
+        
+        putDoc@CouchDB( putReq )( putRes )
+        
+        if ( is_defined( putRes.ok ) && putRes.ok == true ) {
+          println@Console("=== 4. COUCHDB SUCCESS ===")()
+          response.error = false
+          response.data = "Function " + request.name + " upload successful"
+        } else {
+          println@Console("=== 4. COUCHDB RETURNED JSON ERROR ===")()
+          println@Console("DEBUG: putRes.error = " + putRes.error)()
+          println@Console("DEBUG: putRes.reason = " + putRes.reason)()
+          response.error = true
+          response.data = "CouchDB rejected the document: " + putRes.reason
+        }
+      }
+      
+      println@Console("=== 5. FINAL RESPONSE TO GATEWAY ===")()
+      println@Console("DEBUG: response.error = " + response.error)()
+      println@Console("DEBUG: response.data = " + response.data)()
+    }]
 
-            if ( #etcd_res.kvs > 0 ) {
-                base64Decode@Checksum( etcd_res.kvs[0].value )( response )
-            } else {
-                throw( FunctionNotFound, "Function " + request.name + " not found" )
-            }
-      }]
-      [ hash( request )( response ) {
-            base64Encode@Checksum( "/functions/" + request.name + "/checksum" )( encodedKey );
-            range_req.key = encodedKey;
-            
-            // Read from etcd
-            range@Etcd( range_req )( etcd_res );
+    [ get( request )( response ) {
+      scope(fetch_doc) {
+        install( FunctionNotFound => {
+          throw( FunctionNotFound, "Function " + request.name + " not found" )
+        })
+        getDoc@CouchDB({ name = request.name })( doc )
+        base64Decode@Checksum( doc.code )( decodedCode )
+        response = decodedCode
+      }
+    }]
 
-            if ( #etcd_res.kvs > 0 ) {
-                base64Decode@Checksum( etcd_res.kvs[0].value )( response )
-            } else {
-                throw( FunctionNotFound, "Function " + request.name + " not found" )
-            }
-      }]
-    }
+    [ hash( request )( response ) {
+      scope(fetch_hash) {
+        install( FunctionNotFound => {
+          throw( FunctionNotFound, "Function " + request.name + " not found" )
+        })
+        getDoc@CouchDB({ name = request.name })( doc )
+        response = doc.checksum
+      }
+    }]
+  }
 }

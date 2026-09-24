@@ -4,13 +4,21 @@ networks:
 
 services:
 
-  etcd:
-    image: quay.io/coreos/etcd:v3.5.9
+  couchdb:
+    image: couchdb:3
     environment:
-      - ETCD_ADVERTISE_CLIENT_URLS=http://0.0.0.0:2379
-      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - COUCHDB_USER=admin
+      - COUCHDB_PASSWORD=admin
+    ports:
+      - "5984:5984"
     networks:
       - jfn
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://admin:admin@localhost:5984/_up"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s  # <-- Gives CouchDB 10 seconds to boot before counting failures
 
   jocker:
     image: jolielang/jocker
@@ -33,10 +41,13 @@ services:
       dockerfile: docker/Dockerfile.function_catalog
     environment:
       - FUNCTION_CATALOG_LOCATION=socket://0.0.0.0:8002
-      - ETCD_LOCATION=socket://etcd:2379
+      - COUCHDB_LOCATION=socket://couchdb:5984      # <-- Changed
+      - COUCHDB_USER=admin                           # <-- Added
+      - COUCHDB_PASSWORD=admin                       # <-- Added
       - VERBOSE=true
     depends_on:
-      - etcd
+      couchdb:
+        condition: service_healthy                                      # <-- Changed
     networks:
       - jfn
       
