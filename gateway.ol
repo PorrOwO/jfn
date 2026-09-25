@@ -87,6 +87,12 @@ service Gateway(p : GatewayParams) {
     
     [put( request )( response ) {
       scope( put_scope ) {
+        // === SANITY CHECK: What is the Gateway holding? ===
+        println@Console("=== GATEWAY: INCOMING PUT REQUEST ===")()
+        println@Console("DEBUG GW: request.name = " + request.name)()
+        println@Console("DEBUG GW: request.code length = " + #request.code)()
+        println@Console("DEBUG GW: request.code = " + request.code)()
+        
         install( IOException => {
           response.error = true
           response.data = "Failed to communicate with Catalog: " + put_scope.IOException
@@ -97,9 +103,14 @@ service Gateway(p : GatewayParams) {
         
         put@Catalog( request )( catalog_res )
         
-        // If we reach here, it succeeded
-        response.error = false
-        response.data = "Function uploaded successfully"
+        // Check the logical result from the Catalog
+        if ( catalog_res.error == true ) {
+          response.error = true
+          response.data = catalog_res.data
+        } else {
+          response.error = false
+          response.data = "Function uploaded successfully"
+        }
       }
     }]
 
