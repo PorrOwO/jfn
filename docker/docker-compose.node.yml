@@ -23,7 +23,9 @@ services:
     image: jfn/function_catalog
     environment:
       FUNCTION_CATALOG_LOCATION: "socket://0.0.0.0:8002"
-      ETCD_LOCATION: "socket://${MANAGER_IP}:2379"
+      # Connect to the LOCAL etcd node via the bridge gateway IP
+      # HOST_IP is set by the bootstrapper to the jfn bridge gateway
+      ETCD_LOCATION: "socket://${HOST_IP}:2379"
       VERBOSE: "true"
     ports:
       - "8002:8002"
@@ -37,7 +39,7 @@ services:
       PROVISIONER_LOCATION: "socket://0.0.0.0:8001"
       FUNCTION_CATALOG_LOCATION: "socket://catalog:8002"
       DOCKER_NETWORK: "jfn"
-      MIN_RUNNERS: "0"
+      MIN_RUNNERS: "1"
       CALLS_PER_RUNNER: "2"
       CALLS_FOR_PROMOTION: "3"
       CALLS_PER_SINGLETON: "12"
@@ -59,5 +61,36 @@ services:
       VERBOSE: "false"
     depends_on:
       - provisioner
+    networks:
+      - jfn
+
+  runner:
+    image: jfn/runner
+    environment:
+      RUNNER_LOCATION: "socket://0.0.0.0:8010"
+      ADVERTISE_LOCATION: "socket://runner:8010"
+      FUNCTION_CATALOG_LOCATION: "socket://catalog:8002"
+      PROVISIONER_LOCATION: "socket://provisioner:8001"
+      VERBOSE: "true"
+      DEBUG: "false"
+    depends_on:
+      - provisioner
+      - catalog
+    networks:
+      - jfn
+
+  singleton:
+    image: jfn/singleton
+    environment:
+      SINGLETON_LOCATION: "socket://0.0.0.0:8011"
+      ADVERTISE_LOCATION: "socket://singleton:8011"
+      FUNCTION_CATALOG_LOCATION: "socket://catalog:8002"
+      PROVISIONER_LOCATION: "socket://provisioner:8001"
+      FUNCTION: "hello"
+      VERBOSE: "true"
+      DEBUG: "false"
+    depends_on:
+      - provisioner
+      - catalog
     networks:
       - jfn

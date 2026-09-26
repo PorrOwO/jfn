@@ -6,11 +6,45 @@ networks:
       com.docker.network.driver.mtu: 1250
 
 services:
-  etcd:
+  # ─── 3-NODE ETCD CLUSTER ───────────────────────────────────────────
+  etcd-0:
     image: quay.io/coreos/etcd:v3.5.9
     environment:
-      - ETCD_ADVERTISE_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_NAME=etcd-0
+      - ETCD_DATA_DIR=/etcd-data
       - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd-0:2379
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd-0:2380
+      - ETCD_INITIAL_CLUSTER=etcd-0=http://etcd-0:2380,etcd-1=http://etcd-1:2380,etcd-2=http://etcd-2:2380
+      - ETCD_INITIAL_CLUSTER_TOKEN=jfn-etcd
+      - ETCD_INITIAL_CLUSTER_STATE=new
+    ports:
+      - target: 2379
+        published: 2379
+        protocol: tcp
+        mode: host          # reachable from host network (JFN containers)
+    networks:
+      - jfn_overlay         # peer-to-peer Raft traffic
+    volumes:
+      - etcd-data-0:/etcd-data
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.labels.etcd-node == 0]
+
+  etcd-1:
+    image: quay.io/coreos/etcd:v3.5.9
+    environment:
+      - ETCD_NAME=etcd-1
+      - ETCD_DATA_DIR=/etcd-data
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd-1:2379
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd-1:2380
+      - ETCD_INITIAL_CLUSTER=etcd-0=http://etcd-0:2380,etcd-1=http://etcd-1:2380,etcd-2=http://etcd-2:2380
+      - ETCD_INITIAL_CLUSTER_TOKEN=jfn-etcd
+      - ETCD_INITIAL_CLUSTER_STATE=new
     ports:
       - target: 2379
         published: 2379
@@ -18,11 +52,40 @@ services:
         mode: host
     networks:
       - jfn_overlay
+    volumes:
+      - etcd-data-1:/etcd-data
     deploy:
       replicas: 1
       placement:
-        constraints: [node.role == manager]
+        constraints: [node.labels.etcd-node == 1]
 
+  etcd-2:
+    image: quay.io/coreos/etcd:v3.5.9
+    environment:
+      - ETCD_NAME=etcd-2
+      - ETCD_DATA_DIR=/etcd-data
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd-2:2379
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd-2:2380
+      - ETCD_INITIAL_CLUSTER=etcd-0=http://etcd-0:2380,etcd-1=http://etcd-1:2380,etcd-2=http://etcd-2:2380
+      - ETCD_INITIAL_CLUSTER_TOKEN=jfn-etcd
+      - ETCD_INITIAL_CLUSTER_STATE=new
+    ports:
+      - target: 2379
+        published: 2379
+        protocol: tcp
+        mode: host
+    networks:
+      - jfn_overlay
+    volumes:
+      - etcd-data-2:/etcd-data
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.labels.etcd-node == 2]
+
+  # ─── JFN NODE BOOTSTRAPPER ─────────────────────────────────────────
   node-bootstrapper:
     image: docker:25-cli
     volumes:
@@ -33,18 +96,24 @@ services:
     environment:
       - MANAGER_IP=${MANAGER_IP}
     command: >
-      sh -c "docker network create jfn 2>/dev/null || true;
-             docker compose -f docker-compose.node.yml down --remove-orphans 2>/dev/null;
-             docker compose -f docker-compose.node.yml up -d --remove-orphans && tail -f /dev/null"
+      sh -c "
+        docker network create jfn 2>/dev/null || true;
+        GATEWAY_IP=$$(docker network inspect jfn --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}');
+        echo \"Bridge gateway IP: $$GATEWAY_IP\";
+        export HOST_IP=$$GATEWAY_IP;
+        docker compose -f docker-compose.node.yml down --remove-orphans 2>/dev/null;
+        docker compose -f docker-compose.node.yml up -d --remove-orphans && tail -f /dev/null
+      "
     networks:
       - jfn_overlay
     deploy:
       mode: global
       placement:
         constraints: [node.labels.jfn-role == worker]
-      restart_policy:
-        condition: on-failure
+    restart_policy:
+      condition: on-failure
 
+  # ─── NGINX LOAD BALANCER ───────────────────────────────────────────
   nginx:
     image: nginx:alpine
     ports:
@@ -60,3 +129,8 @@ services:
       replicas: 1
       placement:
         constraints: [node.role == manager]
+
+volumes:
+  etcd-data-0:
+  etcd-data-1:
+  etcd-data-2:
