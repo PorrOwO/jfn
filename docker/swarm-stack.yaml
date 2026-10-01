@@ -110,8 +110,8 @@ services:
       mode: global
       placement:
         constraints: [node.labels.jfn-role == worker]
-    restart_policy:
-      condition: on-failure
+      restart_policy:
+        condition: on-failure
 
   # ─── NGINX LOAD BALANCER ───────────────────────────────────────────
   nginx:
