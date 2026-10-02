@@ -23,7 +23,11 @@ services:
     image: jfn/function_catalog
     environment:
       FUNCTION_CATALOG_LOCATION: "socket://0.0.0.0:8002"
-      ETCD_LOCATION: "socket://${MANAGER_IP}:2379"
+      COUCHDB_LOCATION: "socket://${MANAGER_IP}:5984"
+
+      COUCHDB_USER: "admin"
+      COUCHDB_PASSWORD: "admin"
+      
       VERBOSE: "true"
     ports:
       - "8002:8002"
