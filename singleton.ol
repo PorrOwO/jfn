@@ -2,6 +2,7 @@ from console import Console
 from scheduler import Scheduler
 from file import File
 from runtime import Runtime
+from time import Time
 from .loader import LoaderAPI
 from .function import FunctionAPI
 from .provisioner import ProvisionerAPI
@@ -31,6 +32,8 @@ type RunResponse {
 
 constants {
   SINGLETON_FUNCTION_PATH = "/tmp/fn.ol",
+  DRAIN_POLL_MS = 250,
+  DRAIN_TIMEOUT_MS = 30000
 }
 
 service Singleton( p : SingletonParams) {
@@ -39,6 +42,7 @@ service Singleton( p : SingletonParams) {
   embed Scheduler as Scheduler
   embed File as File
   embed Runtime as Runtime
+  embed Time as Time
   
   outputPort Parent {
     location: "local://loader"
@@ -66,14 +70,31 @@ service Singleton( p : SingletonParams) {
   inputPort SingletonInput {
     location: p.singletonLocation
     protocol: sodep
-    interfaces: ExecutorAPI
-    redirects:
-      Fn => Embedded
+    interfaces: ExecutorAPI, FunctionAPI
   }
 
   inputPort SchedulerCallBack {
     location: local
     interfaces: SchedulerCallBackInterface
+  }
+
+  define drain_and_exit {
+    global.draining = true
+    drainStart = getCurrentTimeMillis@Time()
+    drainElapsed = 0
+    while(global.activeCalls > 0 && drainElapsed < DRAIN_TIMEOUT_MS) {
+      if(p.debug) {
+        println@Console("Draining, " + global.activeCalls + " call(s) still in flight")()
+      }
+      sleep@Time(DRAIN_POLL_MS)()
+      drainElapsed = getCurrentTimeMillis@Time() - drainStart
+    }
+    if(global.activeCalls > 0) {
+      println@Console("Drain timeout reached with " + global.activeCalls + " call(s) still in flight, exiting anyway")()
+    } else {
+      println@Console("Drained, no calls left in flight. Quitting...")()
+    }
+    stop@Parent()()
   }
 
   init {
@@ -133,11 +154,13 @@ service Singleton( p : SingletonParams) {
         type = "singleton"
         name = p.singletonName
         commsLocation = p.advertiseLocation
-        invokeLocation = p.advertiseLocation + "/!/Fn"
+        invokeLocation = p.advertiseLocation
         function = p.function
       })()
 
       global.lastPing = true
+      global.draining = false
+      global.activeCalls = 0
       setCronJob@Scheduler({
         jobName = "ping"
         groupName = "ping"
@@ -170,8 +193,46 @@ service Singleton( p : SingletonParams) {
     }
 
     [stop()() {
-      println@Console("Stop signal has been received. Quitting...")()
-      stop@Parent()()
+      println@Console("Stop signal has been received. Draining in-flight calls before quitting...")()
+      drain_and_exit
+    }]
+
+    [fn( request )( response ) {
+      if(global.draining) {
+        throw( ExecutorDraining, "the executor of this function is shutting down, please retry" )
+      }
+
+      global.activeCalls++
+      scope( call_function ) {
+        install(
+          TypeMismatch => {
+            global.activeCalls--
+            throw( TypeMismatch, call_function.TypeMismatch )
+          },
+          InvocationFault => {
+            global.activeCalls--
+            throw( InvocationFault, call_function.InvocationFault )
+          },
+          Timeout => {
+            global.activeCalls--
+            throw( Timeout, call_function.Timeout )
+          },
+          IOException => {
+            global.activeCalls--
+            throw( IOException, call_function.IOException )
+          },
+          RuntimeException => {
+            global.activeCalls--
+            throw( RuntimeException, call_function.RuntimeException )
+          },
+          default => {
+            global.activeCalls--
+            throw( TypeMismatch, "Function threw fault \"" + call_function.default + "\": " + call_function.(call_function.default) )
+          }
+        )
+        fn@Embedded( request )( response )
+      }
+      global.activeCalls--
     }]
   }
 }

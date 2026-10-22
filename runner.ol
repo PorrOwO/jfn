@@ -3,6 +3,7 @@ from scheduler import Scheduler
 from string_utils import StringUtils
 from file import File
 from runtime import Runtime
+from time import Time
 from .loader import LoaderAPI
 from .function import FunctionAPI
 from .provisioner import ProvisionerAPI
@@ -37,6 +38,10 @@ interface RunnerAPI {
 
 constants {
   RUNNER_FUNCTIONS_PATH = "/tmp/jfn",
+  // how often the stop handler checks whether in-flight calls finished,
+  // and how long it waits for them at most before exiting anyway
+  DRAIN_POLL_MS = 250,
+  DRAIN_TIMEOUT_MS = 30000
 }
 
 define derive_filename {
@@ -49,6 +54,7 @@ service Runner( p : RunnerParams ) {
   embed Scheduler as Scheduler
   embed File as File
   embed Runtime as Runtime
+  embed Time as Time
   embed StringUtils as StringUtils
 
   outputPort Parent {
@@ -85,6 +91,28 @@ service Runner( p : RunnerParams ) {
     interfaces: SchedulerCallBackInterface
   }
 
+  // stop handler body: refuse new work and wait for in-flight calls to
+  // finish (bounded) before shutting down, so no invocation is cut in the
+  // middle
+  define drain_and_exit {
+    global.draining = true
+    drainStart = getCurrentTimeMillis@Time()
+    drainElapsed = 0
+    while(global.activeCalls > 0 && drainElapsed < DRAIN_TIMEOUT_MS) {
+      if(p.debug) {
+        println@Console("Draining, " + global.activeCalls + " call(s) still in flight")()
+      }
+      sleep@Time(DRAIN_POLL_MS)()
+      drainElapsed = getCurrentTimeMillis@Time() - drainStart
+    }
+    if(global.activeCalls > 0) {
+      println@Console("Drain timeout reached with " + global.activeCalls + " call(s) still in flight, exiting anyway")()
+    } else {
+      println@Console("Drained, no calls left in flight. Quitting...")()
+    }
+    stop@Parent()()
+  }
+
   init {
     enableTimestamp@Console(true)()
     getFileSeparator@File()(sep)
@@ -103,6 +131,8 @@ service Runner( p : RunnerParams ) {
     })()
 
     global.lastPing = true
+    global.draining = false
+    global.activeCalls = 0
     setCronJob@Scheduler({
       jobName = "ping"
       groupName = "ping"
@@ -142,6 +172,12 @@ service Runner( p : RunnerParams ) {
         println@Console( "Calling: " + t )()
       }
       response.error = false
+
+      global.activeCalls++
+      if(global.draining) {
+        response.error = true
+        response.data = "This runner is shutting down, please retry"
+      }
 
       scope(load_service) {
         install(
@@ -291,11 +327,13 @@ service Runner( p : RunnerParams ) {
           }
         }
       }
+
+      global.activeCalls--
     }]
 
     [stop()() {
-      println@Console("Stop signal has been received. Quitting...")()
-      stop@Parent()()
+      println@Console("Stop signal has been received. Draining in-flight calls before quitting...")()
+      drain_and_exit
     }]
   }
 }

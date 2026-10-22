@@ -39,10 +39,17 @@ type RegisterRequest {
   function?: string
 }
 
+type RemoveFunctionRequest { function: string }
+type RemoveFunctionResponse {
+  error: bool
+  data: string
+}
+
 interface ProvisionerAPI {
   RequestResponse:
     register( RegisterRequest )( void ),
-    executor( ExecutorRequest )( ExecutorResponse )
+    executor( ExecutorRequest )( ExecutorResponse ),
+    removeFunction( RemoveFunctionRequest )( RemoveFunctionResponse )
 }
 
 constants {
@@ -100,7 +107,9 @@ service Provisioner( p : ProvisionerParams ) {
     found = false
     if(exe.type == "runner") {
       for(j = 0, j < #global.runners && !found, j++) {
-        println@Console("try " + global.runners[j].id + ", expect " + exe.id)()
+        if(p.debug) {
+          println@Console("try " + global.runners[j].id + ", expect " + exe.id)()
+        }
         if(global.runners[j].id == exe.id) {
           found = true
           undef(global.runners[j])
@@ -109,13 +118,15 @@ service Provisioner( p : ProvisionerParams ) {
     } else if(exe.type == "singleton") {
       fn << exe.function
       for(j = 0, j < #global.singletons.(fn) && !found, j++) {
-        println@Console("(sing) try " + global.singletons.(fn)[j].id + ", expect " + exe.id)()
+        if(p.debug) {
+          println@Console("(sing) try " + global.singletons.(fn)[j].id + ", expect " + exe.id)()
+        }
         if(global.singletons.(fn)[j].id == exe.id) {
           found = true
-          println@Console("found: " + #global.singletons.(fn))()
           undef(global.singletons.(fn)[j])
-          valueToPrettyString@StringUtils( global.singletons )( t )
-          println@Console("within undef_exe: " + t + ", len = " + #global.singletons.(fn))()
+          if(p.debug) {
+            println@Console("singleton removed, " + #global.singletons.(fn) + " left for function " + fn)()
+          }
         }
       }
     }
@@ -131,13 +142,30 @@ service Provisioner( p : ProvisionerParams ) {
     valueToPrettyString@StringUtils( call_runner )( err )
     println@Console("Ping error on " + t + "Removing executor: #" + i + " (type: " + collection[i].type + ", location: " + collection[i].invokeLocation + ")\n" + err)()
     exe -> collection[i]
+    exeId = exe.id
     undef_exe
+
+    scope(kill_unresponsive) {
+      install(
+        default => {
+          println@Console("Could not kill the container of unresponsive executor " + exeId + ": " + kill_unresponsive.default)()
+        }
+      )
+      kill@Spawner( exeId )( kill_res )
+      if(kill_res.error) {
+        println@Console("Container of unresponsive executor " + exeId + " could not be killed: " + kill_res.data)()
+      }
+    }
   }
 
   define ping_all {
-    println@Console("called print_all")()
+    if(p.debug) {
+      println@Console("called ping_all")()
+    }
     spawn(i over #collection) in pongs {
-      println@Console("print_all (" + i + ")")()
+      if(p.debug) {
+        println@Console("ping_all (" + i + ")")()
+      }
       if(is_defined(collection[i])) {
         scope(call_runner) {
           install(
@@ -161,9 +189,13 @@ service Provisioner( p : ProvisionerParams ) {
           if(p.debug) {
             println@Console("Pinging: " + Executor.location)()
           }
-          println@Console("pre: " + Executor.location)()
+          if(p.debug) {
+            println@Console("pre: " + Executor.location)()
+          }
           ping@Executor(0)(pongs)
-          println@Console("after: " + Executor.location)()
+          if(p.debug) {
+            println@Console("after: " + Executor.location)()
+          }
         }
       } else {
         valueToPrettyString@StringUtils( collection )( t )
@@ -219,17 +251,40 @@ service Provisioner( p : ProvisionerParams ) {
       valueToPrettyString@StringUtils( exe )( t )
       println@Console("Killing executor: " + t)()
     }
-    // send the stop message to the executor
-    Executor.location = exe.commsLocation
-    stop@Executor()()
 
-    // kill and remove the container
-    kill@Spawner(exe.id)(kill_res)
-    if(kill_res.error) {
-      println@Console("Error while killing a service:\n" + kill_res.data)()
-    }
+    exeId = exe.id
+    exeLoc = exe.commsLocation
 
     undef_exe
+  
+    scope(stop_executor) {
+      install(
+        IOException => {
+          println@Console("Executor " + exeId + " was already gone while stopping (continuing with the kill)")()
+        },
+        Timeout => {
+          println@Console("Executor " + exeId + " did not acknowledge the stop signal (continuing with the kill)")()
+        },
+        default => {
+          println@Console("Stopping executor " + exeId + " failed (fault: " + stop_executor.default + ", continuing with the kill)")()
+        }
+      )
+      Executor.location = exeLoc
+      stop@Executor()()
+    }
+
+    // remove the container
+    scope(kill_container) {
+      install(
+        default => {
+          println@Console("Error while killing the container of executor " + exeId + ": " + kill_container.default)()
+        }
+      )
+      kill@Spawner(exeId)(kill_res)
+      if(kill_res.error) {
+        println@Console("Error while killing a service:\n" + kill_res.data)()
+      }
+    }
   }
 
   init {
@@ -474,6 +529,30 @@ service Provisioner( p : ProvisionerParams ) {
       if(p.verbose) {
         valueToPrettyString@StringUtils( response )( t )
         println@Console( "Load balancer target: " + t )()
+      }
+    }]
+
+    [removeFunction( request )( response ) {
+      response.error = false
+
+      singles << global.singletons.(request.function)
+      undef( global.singletons.(request.function) )
+      undef( global.callsByFunction.(request.function) )
+      undef( global.nextSingleton.(request.function) )
+
+      stopped = 0
+      for( si = 0, is_defined( singles ) && si < #singles, si++ ) {
+        if( is_defined( singles[si] ) ) {
+          exe << singles[si]
+          kill_executor
+          stopped++
+        }
+      }
+
+      response.data = "stopped " + stopped + " singleton executor(s) for function " + request.function
+      if(p.verbose) {
+        valueToPrettyString@StringUtils( response )( t )
+        println@Console( "removeFunction " + request.function + ": " + t )()
       }
     }]
   }

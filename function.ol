@@ -3,5 +3,5 @@ type FunctionResponse { data?: undefined }
 
 interface FunctionAPI {
   RequestResponse:
-    fn( FunctionRequest )( FunctionResponse )
+    fn( FunctionRequest )( FunctionResponse ) throws ExecutorDraining( string )
 }

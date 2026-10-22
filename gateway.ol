@@ -30,6 +30,10 @@ type FunctionCatalogPutRequest {
   code: string 
 }
 
+type FunctionCatalogRemoveRequest {
+  name: string
+}
+
 type FunctionCatalogResult {
   error: bool
   data: string 
@@ -38,7 +42,8 @@ type FunctionCatalogResult {
 interface GatewayAPI {
   RequestResponse:
     op( GatewayRequest )( GatewayResponse ),
-    put( FunctionCatalogPutRequest )( FunctionCatalogResult )
+    put( FunctionCatalogPutRequest )( FunctionCatalogResult ),
+    remove( FunctionCatalogRemoveRequest )( FunctionCatalogResult )
 
 }
 
@@ -114,6 +119,58 @@ service Gateway(p : GatewayParams) {
       }
     }]
 
+    [remove( request )( response ) {
+      // Tear down the function's executors first: if that fails, the catalog
+      // is left untouched and invoke keeps working. If the catalog delete
+      // then fails, the singletons are already gone and invocations fall
+      // back to runners, which reject the removed function (hash check) --
+      // self-healing either way.
+      prov_failed = false
+      scope( teardown ) {
+        install(
+          IOException => {
+            prov_failed = true
+            response.data = "Could not communicate with the provisioner: " + teardown.IOException
+          },
+          default => {
+            prov_failed = true
+            response.data = "Provisioner error (fault: " + teardown.default + ")"
+          }
+        )
+        removeFunction@Provisioner({
+          function = request.name
+        })( prov_res )
+      }
+
+      if( prov_failed ) {
+        response.error = true
+      } else {
+        scope( remove_from_catalog ) {
+          install(
+            IOException => {
+              response.error = true
+              response.data = "Executors were torn down, but the catalog could not be reached: " + remove_from_catalog.IOException
+            },
+            default => {
+              response.error = true
+              response.data = "Executors were torn down, but the catalog could not be reached: " + remove_from_catalog.default
+            }
+          )
+          remove@Catalog({ name = request.name })( catalog_res )
+        }
+
+        if( !is_defined( response.error ) ) {
+          if( catalog_res.error ) {
+            response.error = true
+            response.data = "Executors were torn down, but catalog removal failed: " + catalog_res.data
+          } else {
+            response.error = false
+            response.data = catalog_res.data + " (" + prov_res.data + ")"
+          }
+        }
+      }
+    }]
+
     [op( request )( response ) {
       scope(call_executor) {
         // Catch everything: an escaping fault here would reach the HTTP
@@ -181,9 +238,13 @@ service Gateway(p : GatewayParams) {
       } else if(executor.type == "singleton") {
         scope(call_singleton) {
           install(
+            ExecutorDraining => {
+              response.error = true
+              response.data = "The executor is shutting down, please retry: " + call_singleton.ExecutorDraining
+            },
             TypeMismatch => {
               response.error = true
-              response.data = "The function failed while executing (see the singleton logs for details)"
+              response.data = "The function failed while executing: " + call_singleton.TypeMismatch + " (see the singleton logs for details)"
             },
             InvocationFault => {
               response.error = true

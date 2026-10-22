@@ -36,7 +36,8 @@ type EtcdRangeResponse {
 interface EtcdInterface {
   RequestResponse:
     put(EtcdPutRequest)(undefined),
-    range(EtcdRangeRequest)(EtcdRangeResponse)
+    range(EtcdRangeRequest)(EtcdRangeResponse),
+    del(EtcdRangeRequest)(undefined)
 }
 
 type FunctionCatalogRequest { name: string }
@@ -55,7 +56,8 @@ interface FunctionCatalogAPI {
   RequestResponse:
     hash( FunctionCatalogRequest )( string ) throws FunctionNotFound( string ) BackendUnavailable( string ),
     get( FunctionCatalogRequest )( string ) throws FunctionNotFound( string ) BackendUnavailable( string ),
-    put( FunctionCatalogPutRequest )( FunctionCatalogResult )
+    put( FunctionCatalogPutRequest )( FunctionCatalogResult ),
+    remove( FunctionCatalogRequest )( FunctionCatalogResult )
 }
 
 service FunctionCatalog(p : FunctionCatalogParams) {
@@ -72,6 +74,8 @@ service FunctionCatalog(p : FunctionCatalogParams) {
       osc.put.method = "post"
       osc.range.alias = "v3/kv/range"
       osc.range.method = "post"
+      osc.del.alias = "v3/kv/deleterange"
+      osc.del.method = "post"
     }
     interfaces: EtcdInterface
   }
@@ -181,6 +185,37 @@ service FunctionCatalog(p : FunctionCatalogParams) {
                 base64Decode@Checksum( etcd_res.kvs[0].value )( response )
             } else {
                 throw( FunctionNotFound, "Function " + request.name + " not found" )
+            }
+      }]
+
+      [ remove( request )( response ) {
+            base64Encode@Checksum( "/functions/" + request.name + "/code" )( keyCode );
+            base64Encode@Checksum( "/functions/" + request.name + "/checksum" )( keyHash );
+
+            scope( delete_from_store ) {
+              install(
+                IOException => {
+                  response.error = true
+                  response.data = "Could not remove from the function store: " + delete_from_store.IOException
+                },
+                Timeout => {
+                  response.error = true
+                  response.data = "Timed out removing from the function store"
+                },
+                default => {
+                  response.error = true
+                  response.data = "Function store error (fault: " + delete_from_store.default + ")"
+                }
+              )
+              // etcd's deleterange succeeds even when the key does not exist,
+              // so removing a missing function is idempotent by design.
+              del_code_req.key = keyCode;
+              del@Etcd( del_code_req )( _ );
+              del_hash_req.key = keyHash;
+              del@Etcd( del_hash_req )( _ )
+
+              response.error = false
+              response.data = "Function " + request.name + " removed"
             }
       }]
     }
