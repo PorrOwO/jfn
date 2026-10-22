@@ -28,6 +28,7 @@ type ExecutorRequest { function: string }
 type ExecutorResponse {
   type: string
   location: string
+  message?: string
 }
 
 type RegisterRequest {
@@ -458,6 +459,7 @@ service Provisioner( p : ProvisionerParams ) {
         println@Console("No singleton or runner to execute the job onto!")()
         response.type = "error"
         response.location = "error"
+        response.message = "no executor is available (no runner or singleton is registered)"
       } else {
         count_call
 

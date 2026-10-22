@@ -141,85 +141,154 @@ service Runner( p : RunnerParams ) {
         valueToPrettyString@StringUtils( request )( t )
         println@Console( "Calling: " + t )()
       }
+      response.error = false
+
       scope(load_service) {
         install(
+          FunctionNotFound => {
+            response.error = true
+            response.data = load_service.FunctionNotFound
+          },
+          BackendUnavailable => {
+            response.error = true
+            response.data = "Could not contact the function catalog: " + load_service.BackendUnavailable
+          },
           IOException => {
             response.error = true
-            response.data = "Could not contact the function catalog (to check the hash)"
+            response.data = "Could not contact the function catalog (to check the hash): " + load_service.IOException
+          },
+          Timeout => {
+            response.error = true
+            response.data = "Timed out contacting the function catalog (to check the hash)"
+          },
+          default => {
+            response.error = true
+            response.data = "Function catalog error (fault: " + load_service.default + ")"
           }
         )
         hash@FunctionCatalog({
           name = request.name
         })(hash)
       }
-      derive_filename
-      exists@File(filename)(exists)
-      if(!exists) {
-        scope(load_service) {
-          install(
-            IOException => {
-              response.error = true
-              response.data = "Could not contact the function catalog"
-            }
-          )
-          get@FunctionCatalog({
-            name = request.name
-          })(function_code)
-        }
-        if(!response.error) {
-          undef(response.data)
-          scope(write_function) {
+      if(!response.error) {
+        derive_filename
+        exists@File(filename)(exists)
+        if(!exists) {
+          scope(load_service) {
             install(
-              FileNotFound => {
+              FunctionNotFound => {
                 response.error = true
-                response.data = "Could not find function file or its parent directories"
+                response.data = load_service.FunctionNotFound
+              },
+              BackendUnavailable => {
+                response.error = true
+                response.data = "Could not contact the function catalog: " + load_service.BackendUnavailable
               },
               IOException => {
                 response.error = true
-                response.data = "Could not write to the function file"
+                response.data = "Could not contact the function catalog: " + load_service.IOException
+              },
+              Timeout => {
+                response.error = true
+                response.data = "Timed out contacting the function catalog"
+              },
+              default => {
+                response.error = true
+                response.data = "Function catalog error (fault: " + load_service.default + ")"
               }
             )
-            writeFile@File({
-              filename = filename
-              format = "text"
-              content = function_code
-            })()
-            if(p.verbose) {
-              println@Console("Wrote function to " + filename)()
+            get@FunctionCatalog({
+              name = request.name
+            })(function_code)
+          }
+          if(!response.error) {
+            undef(response.data)
+            scope(write_function) {
+              install(
+                FileNotFound => {
+                  response.error = true
+                  response.data = "Could not find function file or its parent directories"
+                },
+                IOException => {
+                  response.error = true
+                  response.data = "Could not write to the function file: " + write_function.IOException
+                },
+                default => {
+                  response.error = true
+                  response.data = "Could not store the function file (fault: " + write_function.default + ")"
+                }
+              )
+              writeFile@File({
+                filename = filename
+                format = "text"
+                content = function_code
+              })()
+              if(p.verbose) {
+                println@Console("Wrote function to " + filename)()
+              }
             }
           }
         }
-      }
-      if(!response.error) {
-        scope(load_service) {
-          install(
-            RuntimeException => {
-              response.error = true
-              response.data = "Could not load function service: " + load_service.RuntimeException
-            }
-          )
-          loadEmbeddedService@Runtime({
-            filepath = filename
-            type = "jolie"
-          })(loc)
-        }
-        invoke_data << request
-        undef(invoke_data.name)
-        scope(call_service) {
-          install(
-            InvocationFault => {
-              response.error = true
-              response.data = "Error while calling the function: " + call_service.InvocationFault.name
-            }
-          )
-          Embedded.location = loc
-          fn@Embedded(invoke_data)(output)
-          response.data << output.data
-          response.error = false
-          if(p.debug) {
-            println@Console("Run successful")()
+        if(!response.error) {
+          scope(load_service) {
+            install(
+              RuntimeException => {
+                response.error = true
+                response.data = "Could not load function service: " + load_service.RuntimeException
+              },
+              default => {
+                response.error = true
+                response.data = "Could not load function service (fault: " + load_service.default + ")"
+              }
+            )
+            loadEmbeddedService@Runtime({
+              filepath = filename
+              type = "jolie"
+            })(loc)
           }
-          callExit@Runtime( loc )()
+        }
+        if(!response.error) {
+          invoke_data << request
+          undef(invoke_data.name)
+          scope(call_service) {
+            install(
+              InvocationFault => {
+                response.error = true
+                response.data = "Error while calling the function: " + call_service.InvocationFault.name
+              },
+              TypeMismatch => {
+                response.error = true
+                response.data = "The function failed while executing (see the runner logs for details)"
+              },
+              Timeout => {
+                response.error = true
+                response.data = "The function timed out while executing"
+              },
+              IOException => {
+                response.error = true
+                response.data = "Lost the connection to the function while executing: " + call_service.IOException
+              },
+              default => {
+                response.error = true
+                response.data = "Function invocation error (fault: " + call_service.default + ")"
+              }
+            )
+            Embedded.location = loc
+            fn@Embedded(invoke_data)(output)
+            response.data << output.data
+            response.error = false
+            if(p.debug) {
+              println@Console("Run successful")()
+            }
+          }
+          scope(cleanup) {
+            install(
+              default => {
+                println@Console( "Warning: could not shut down the function service (fault: " + cleanup.default + ")" )()
+              }
+            )
+            callExit@Runtime( loc )()
+          }
         }
       }
     }]

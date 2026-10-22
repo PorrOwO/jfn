@@ -79,51 +79,80 @@ service Singleton( p : SingletonParams) {
   init {
     enableTimestamp@Console(true)()
 
+    prep_failed = false
     println@Console("Downloading function: " + p.function)()
-    get@FunctionCatalog({
-      name = p.function
-    })(code)
-    if(code.error) {
-      println@Console("Could not find function \"" + p.function + "\" in the catalog. Error: " + code.error)()
-      stop@Parent()()
+    scope(prepare) {
+      install(
+        FunctionNotFound => {
+          println@Console("Could not find function \"" + p.function + "\" in the catalog: " + prepare.FunctionNotFound)()
+          prep_failed = true
+        },
+        BackendUnavailable => {
+          println@Console("Could not download function \"" + p.function + "\": " + prepare.BackendUnavailable)()
+          prep_failed = true
+        },
+        IOException => {
+          println@Console("I/O error while preparing function \"" + p.function + "\": " + prepare.IOException)()
+          prep_failed = true
+        },
+        Timeout => {
+          println@Console("Timed out while preparing function \"" + p.function + "\"")()
+          prep_failed = true
+        },
+        RuntimeException => {
+          println@Console("Could not load function \"" + p.function + "\": " + prepare.RuntimeException)()
+          prep_failed = true
+        },
+        default => {
+          println@Console("Unexpected error while preparing function \"" + p.function + "\" (fault: " + prepare.default + ")")()
+          prep_failed = true
+        }
+      )
+      get@FunctionCatalog({
+        name = p.function
+      })(code)
+      writeFile@File({
+        filename = SINGLETON_FUNCTION_PATH
+        format = "text"
+        content = code
+      })()
+
+      println@Console("Embedding " + SINGLETON_FUNCTION_PATH)()
+      loadEmbeddedService@Runtime({
+        filepath = SINGLETON_FUNCTION_PATH
+        type = "jolie"
+      })(loc)
+      Embedded.location = loc
     }
-    writeFile@File({
-      filename = SINGLETON_FUNCTION_PATH
-      format = "text"
-      content = code.data
-    })()
 
-    println@Console("Embedding " + SINGLETON_FUNCTION_PATH)()
-    loadEmbeddedService@Runtime({
-      filepath = SINGLETON_FUNCTION_PATH
-      type = "jolie"
-    })(loc)
-    Embedded.location = loc
+    if(prep_failed) {
+      stop@Parent()()
+    } else {
+      println@Console("Attaching to provisioner at " + Provisioner.location)()
+      register@Provisioner({
+        type = "singleton"
+        name = p.singletonName
+        commsLocation = p.advertiseLocation
+        invokeLocation = p.advertiseLocation + "/!/Fn"
+        function = p.function
+      })()
 
-    println@Console("Attaching to provisioner at " + Provisioner.location)()
-    register@Provisioner({
-      type = "singleton"
-      name = p.singletonName
-      commsLocation = p.advertiseLocation
-      invokeLocation = p.advertiseLocation + "/!/Fn"
-      function = p.function
-    })()
-
-    global.lastPing = true
-    setCronJob@Scheduler({
-      jobName = "ping"
-      groupName = "ping"
-      cronSpecs << {
-        year = "*"
-        dayOfWeek = "*"
-        month = "*"
-        dayOfMonth = "?"
-        hour = "*"
-        minute = "*"
-        second = "0/10"
-      }
-    })()
-    println@Console("Listening on " + p.singletonLocation + " (advertise: " + p.advertiseLocation + ")")()
+      global.lastPing = true
+      setCronJob@Scheduler({
+        jobName = "ping"
+        groupName = "ping"
+        cronSpecs << {
+          year = "*"
+          dayOfWeek = "*"
+          month = "*"
+          dayOfMonth = "?"
+          hour = "*"
+          minute = "*"
+          second = "0/10"
+        }
+      })()
+      println@Console("Listening on " + p.singletonLocation + " (advertise: " + p.advertiseLocation + ")")()
+    }
   }
 
   main {

@@ -11,13 +11,13 @@ variable "storage_pool" {
 variable "golden_image_path" {
   description = "Frozen golden image (never booted directly; every VM is a copy-on-write clone of it)"
   type        = string
-  default     = "/var/lib/libvirt/images/jfn-golden.qcow2"
+  default     = "/var/lib/libvirt/images/jfn-golden-v2.qcow2"
 }
 
 variable "base_volume_name" {
   description = "Name of the base volume copied into the pool. Bump the suffix when you rebuild the golden image."
   type        = string
-  default     = "jfn-base-v1.qcow2"
+  default     = "jfn-base-v2.qcow2"
 }
 
 # ---- cluster shape --------------------------------------------------------

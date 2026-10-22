@@ -115,27 +115,55 @@ service Gateway(p : GatewayParams) {
     }]
 
     [op( request )( response ) {
-      scope(call_runner) {
+      scope(call_executor) {
+        // Catch everything: an escaping fault here would reach the HTTP
+        // client as a bare TypeMismatch with no useful information.
         install(
           IOException => {
             response.error = true
-            response.data = "Could not comunicate with the provisioner"
+            response.data = "Could not communicate with the provisioner: " + call_executor.IOException
+          },
+          Timeout => {
+            response.error = true
+            response.data = "Timed out waiting for the provisioner"
+          },
+          default => {
+            response.error = true
+            response.data = "Provisioner error (fault: " + call_executor.default + ")"
           }
         )
         executor@Provisioner({
           function = request.fn
         })(executor)
       }
-      if(executor.type == "runner") {
+      if( !is_defined( executor.type ) ) {
+        // provisioner call failed
+        if( !is_defined( response.error ) ) {
+          response.error = true
+          response.data = "Invalid response from the provisioner"
+        }
+      } else if(executor.type == "runner") {
         scope(call_runner) {
           install(
             TypeMismatch => {
               response.error = true
-              response.data = "Error while calling the function: " + call_runner.TypeMismatch
+              response.data = "Internal error while talking to the runner: " + call_runner.TypeMismatch
             },
             InvocationFault => {
               response.error = true
               response.data = "Could not invoke runner: " + call_runner.InvocationFault
+            },
+            IOException => {
+              response.error = true
+              response.data = "Could not reach the runner (it may have shut down): " + call_runner.IOException
+            },
+            Timeout => {
+              response.error = true
+              response.data = "The runner did not respond in time"
+            },
+            default => {
+              response.error = true
+              response.data = "Runner error (fault: " + call_runner.default + ")"
             }
           )
 
@@ -155,11 +183,23 @@ service Gateway(p : GatewayParams) {
           install(
             TypeMismatch => {
               response.error = true
-              response.data = "Error while calling the function: " + call_singleton.TypeMismatch
+              response.data = "The function failed while executing (see the singleton logs for details)"
             },
             InvocationFault => {
               response.error = true
               response.data = "Could not invoke singleton: " + call_singleton.InvocationFault
+            },
+            IOException => {
+              response.error = true
+              response.data = "Could not reach the singleton (it may have shut down): " + call_singleton.IOException
+            },
+            Timeout => {
+              response.error = true
+              response.data = "The singleton did not respond in time"
+            },
+            default => {
+              response.error = true
+              response.data = "Singleton error (fault: " + call_singleton.default + ")"
             }
           )
 
@@ -176,7 +216,11 @@ service Gateway(p : GatewayParams) {
         }
       } else if(executor.type == "error") {
         response.error = true
-        response.data = "Provisioner-level error. Possibly, no executor was found."
+        if(is_defined(executor.message)) {
+          response.data = "Provisioner error: " + executor.message
+        } else {
+          response.data = "Provisioner-level error. Possibly, no executor was found."
+        }
       } else {
         valueToPrettyString@StringUtils( executor )( t )
         println@Console( "executor: " + t )()

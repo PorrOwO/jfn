@@ -30,7 +30,7 @@ type EtcdKv {
 type EtcdRangeResponse {
   header?: undefined
   kvs*: EtcdKv
-  count: string
+  count?: string
 }
 
 interface EtcdInterface {
@@ -49,10 +49,12 @@ type FunctionCatalogResult {
   data: string
 }
 
+// Contract shared by every caller (gateway, runner, singleton).
+// Faults declared here must describe *catalog-level* conditions only, so this
 interface FunctionCatalogAPI {
   RequestResponse:
-    hash( FunctionCatalogRequest )( string ),
-    get( FunctionCatalogRequest )( string ),
+    hash( FunctionCatalogRequest )( string ) throws FunctionNotFound( string ) BackendUnavailable( string ),
+    get( FunctionCatalogRequest )( string ) throws FunctionNotFound( string ) BackendUnavailable( string ),
     put( FunctionCatalogPutRequest )( FunctionCatalogResult )
 }
 
@@ -96,25 +98,56 @@ service FunctionCatalog(p : FunctionCatalogParams) {
          base64Encode@Checksum( "/functions/" + request.name + "/checksum" )( keyHash );
          base64Encode@Checksum( codeHash )( valHash );
 
-         // Write code to etcd
-         put_code_req.key = keyCode;
-         put_code_req.value = valCode;
-         put@Etcd( put_code_req )( etcd_res1 );
-         // Write hash to etcd
-         put_hash_req.key = keyHash;
-         put_hash_req.value = valHash;
-         put@Etcd( put_hash_req )( etcd_res2 )
+         scope( write_to_store ) {
+           install(
+             IOException => {
+               response.error = true
+               response.data = "Could not write to the function store: " + write_to_store.IOException
+             },
+             Timeout => {
+               response.error = true
+               response.data = "Timed out writing to the function store"
+             },
+             default => {
+               response.error = true
+               response.data = "Function store error (fault: " + write_to_store.default + ")"
+             }
+           )
+           // Write code to etcd
+           put_code_req.key = keyCode;
+           put_code_req.value = valCode;
+           put@Etcd( put_code_req )( etcd_res1 );
+           // Write hash to etcd
+           put_hash_req.key = keyHash;
+           put_hash_req.value = valHash;
+           put@Etcd( put_hash_req )( etcd_res2 )
 
-         response.error = false
-         response.data = "Function " + request.name + " upload successful"
+           response.error = false
+           response.data = "Function " + request.name + " upload successful"
+         }
       }]
 
       [ get( request )( response ) {
             base64Encode@Checksum( "/functions/" + request.name + "/code" )( encodedKey );
             range_req.key = encodedKey;
-            
-            // Read from etcd
-            range@Etcd( range_req )( etcd_res );
+
+            scope( read_from_store ) {
+              install(
+                IOException => {
+                  throw( BackendUnavailable, "Could not reach the function store: " + read_from_store.IOException )
+                },
+                Timeout => {
+                  throw( BackendUnavailable, "Timed out reading from the function store" )
+                },
+                TypeMismatch => {
+                  throw( BackendUnavailable, "Function store returned an unexpected response: " + read_from_store.TypeMismatch )
+                },
+                default => {
+                  throw( BackendUnavailable, "Function store error (fault: " + read_from_store.default + ")" )
+                }
+              )
+              range@Etcd( range_req )( etcd_res )
+            }
 
             if ( #etcd_res.kvs > 0 ) {
                 base64Decode@Checksum( etcd_res.kvs[0].value )( response )
@@ -125,9 +158,24 @@ service FunctionCatalog(p : FunctionCatalogParams) {
       [ hash( request )( response ) {
             base64Encode@Checksum( "/functions/" + request.name + "/checksum" )( encodedKey );
             range_req.key = encodedKey;
-            
-            // Read from etcd
-            range@Etcd( range_req )( etcd_res );
+
+            scope( read_from_store ) {
+              install(
+                IOException => {
+                  throw( BackendUnavailable, "Could not reach the function store: " + read_from_store.IOException )
+                },
+                Timeout => {
+                  throw( BackendUnavailable, "Timed out reading from the function store" )
+                },
+                TypeMismatch => {
+                  throw( BackendUnavailable, "Function store returned an unexpected response: " + read_from_store.TypeMismatch )
+                },
+                default => {
+                  throw( BackendUnavailable, "Function store error (fault: " + read_from_store.default + ")" )
+                }
+              )
+              range@Etcd( range_req )( etcd_res )
+            }
 
             if ( #etcd_res.kvs > 0 ) {
                 base64Decode@Checksum( etcd_res.kvs[0].value )( response )
