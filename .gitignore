@@ -1,6 +1,40 @@
+# ===================== Jolie / Java build output =====================
 *.class
+lib/*
+
+# local service configs / scratch space
 runner.json
 singleton.json
-lib/*
 vms
 test
+
+# ===================== Terraform =====================
+# The module under terraform-deploy/jfn-lab/ carries its own .gitignore
+# (state, tfvars, .terraform, generated files). These cover the loose
+# artifacts that sit alongside the module rather than inside it:
+terraform-deploy/*.tar.gz
+terraform-deploy/*.zip
+
+# ===================== Secrets / credentials =====================
+# The lab reads its SSH key from ~/.ssh by default; if one is ever dropped
+# into the repo, make sure it never gets committed.
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+*.p12
+*.pfx
+.env
+.env.*
+!.env.example
+
+# ===================== Editor / OS junk =====================
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+jfn-deployment.md

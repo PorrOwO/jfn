@@ -1,0 +1,37 @@
+# ===================== OpenTofu / Terraform working dir =====================
+# Provider binaries, modules, plugins downloaded by `tofu init`.
+# NOTE: .terraform.lock.hcl is deliberately NOT ignored — it pins provider
+# versions and should be committed.
+.terraform/
+
+# ===================== State (contains IPs, hostnames, cluster layout) =====================
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# ===================== Variable files (may hold secrets) =====================
+# Ignore the whole class, not just the one file that exists today, so a
+# future prod.auto.tfvars / secrets.auto.tfvars is never committed.
+*.auto.tfvars
+*.tfvars
+# ...but keep the documented, shareable examples.
+!*.tfvars.example
+
+# Terraform override files — local-only by convention, never commit.
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# ===================== Generated at deploy time =====================
+# Recreated by main.tf (local_file) and deploy.sh; regenerable, and the
+# nginx conf embeds internal endpoints.
+swarm/generated/
+swarm/nginx.conf
+
+# ===================== Diagnostics / local archives =====================
+# Snapshots produced by jfn-diagnose.sh — full system logs, IPs, hostnames.
+diag-*/
+diag-*.tar.gz
+*.zip
